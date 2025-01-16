@@ -1,0 +1,6 @@
+services: 
+  script: 
+    build: . 
+    volumes: 
+      - .:/app
+      - /app/node_modules
