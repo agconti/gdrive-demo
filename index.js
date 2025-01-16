@@ -1,67 +1,140 @@
 const path = require('path');
 const {google} = require('googleapis');
 
-// Path to service account credentials file
-const CREDENTIALS_PATH = path.join(process.cwd(), './service-creds.json');
+const CREDENTIALS_PATH = path.join(process.cwd(), 'service-creds.json');
+const SCOPES = ['https://www.googleapis.com/auth/drive'];
 
-const SCOPES = [
-  'https://www.googleapis.com/auth/drive',
-  'https://www.googleapis.com/auth/drive.file', 
-  // 'https://www.googleapis.com/auth/admin.directory.user', 
-  // 'https://www.googleapis.com/auth/admin.directory.user.readonly',
-  // 'https://www.googleapis.com/auth/admin.directory.user.security',
-];
+// Configuration
+const ROOT_FOLDER_NAME = 'Client Materials';
+const SUBFOLDERS = ['Pre-Sale', 'Post-Sale', 'Final Docs'];
 
-async function runSample() {
+async function createFolderStructure(clientName, brandName, dealName) {
   try {
-    // Load the service account credentials directly
     const auth = new google.auth.GoogleAuth({
-      keyFile: CREDENTIALS_PATH, 
+      keyFile: CREDENTIALS_PATH,
       scopes: SCOPES,
     });
 
-    // Get the authorized client
     const client = await auth.getClient();
-    
-    // Create drive instance
     const drive = google.drive({ version: 'v3', auth: client });
-    
-    // const clientMaterialsFolderId = "14HUQsv5QCct5ita2H8It6rKXV91navQm";
-    // const query = `'${clientMaterialsFolderId}' in parents and trashed = false`;
-    
-    const params = {
-      pageSize: 10,
-      includeItemsFromAllDrives: true,
-      supportsAllDrives: true,
-      fields: 'nextPageToken, files(id, name, mimeType, createdTime, modifiedTime, size, webViewLink, shared)',
-      // q: query,
+
+    // Get or verify root folder (Client Materials)
+    const rootFolder = await findFolder(drive, ROOT_FOLDER_NAME);
+    if (!rootFolder) {
+      throw new Error(`Root folder "${ROOT_FOLDER_NAME}" not found`);
+    }
+
+    // Create or get client folder
+    const clientFolder = await findOrCreateFolder(drive, clientName, rootFolder.id);
+    console.log(`Client folder ${clientName}: ${clientFolder.id}`);
+
+    // Create or get brand folder
+    const brandFolder = await findOrCreateFolder(drive, brandName, clientFolder.id);
+    console.log(`Brand folder ${brandName}: ${brandFolder.id}`);
+
+    // Create deal folder
+    const dealFolder = await createFolder(drive, dealName, brandFolder.id);
+    console.log(`Deal folder ${dealName}: ${dealFolder.id}`);
+
+    // Create subfolders
+    const createdSubfolders = await Promise.all(
+      SUBFOLDERS.map(name => createFolder(drive, name, dealFolder.id))
+    );
+
+    console.log({rootFolder})
+    console.log('Created folder structure:', {
+      clientFolder,
+      brandFolder,
+      dealFolder,
+      subfolders: createdSubfolders.map(folder => ({
+        name: folder.name,
+        id: folder.id
+      }))
+    });
+
+    return {
+      clientFolder,
+      brandFolder,
+      dealFolder,
+      subfolders: createdSubfolders
     };
 
-    // Add error handling for the API call
-    const res = await drive.files.list(params);
-    
-    if (!res.data.files || res.data.files.length === 0) {
-      console.log('No files found.');
-      return [];
-    }
-
-    console.log(`Files found (In current page ${res.data.files.length }): `, res.data.files);
-    return res.data;
-
   } catch (error) {
-    console.error('Error details:', error.message);
+    console.error('Error creating folder structure:', error.message);
+    throw error;
+  }
+}
+
+async function findFolder(drive, folderName, parentId = null) {
+  try {
+    const query = [
+      `mimeType = 'application/vnd.google-apps.folder'`,
+      `name = '${folderName}'`,
+      `trashed = false`
+    ];
     
-    // Provide more specific error messages
-    if (error.message.includes('credentials')) {
-      console.error('\nCredentials Error: Make sure your service-creds.json file exists and is valid.');
-      console.error('The file should be in:', CREDENTIALS_PATH);
+    if (parentId) {
+      query.push(`'${parentId}' in parents`);
     }
-    
-    if (error.message.includes('permission')) {
-      console.error('\nPermission Error: Make sure the service account has access to the folder.');
-      console.error('Folder ID being accessed:', clientMaterialsFolderId);
-    }
-    
+
+    const response = await drive.files.list({
+      q: query.join(' and '),
+      fields: 'files(id, name, webViewLink)',
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true
+    });
+
+    return response.data.files[0];
+  } catch (error) {
+    console.error(`Error finding folder ${folderName}:`, error.message);
+    throw error;
+  }
+}
+
+async function createFolder(drive, folderName, parentId) {
+  try {
+    const fileMetadata = {
+      name: folderName,
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: [parentId]
+    };
+
+    const response = await drive.files.create({
+      requestBody: fileMetadata,
+      fields: 'id, name, webViewLink',
+      supportsAllDrives: true
+    });
+
+    return response.data;
+  } catch (error) {
+    console.error(`Error creating folder ${folderName}:`, error.message);
+    throw error;
+  }
+}
+
+async function findOrCreateFolder(drive, folderName, parentId) {
+  const existingFolder = await findFolder(drive, folderName, parentId);
+  if (existingFolder) {
+    console.log(`Found existing folder: ${folderName}`);
+    return existingFolder;
+  }
+
+  console.log(`Creating new folder: ${folderName}`);
+  return await createFolder(drive, folderName, parentId);
+}
+
+// Example usage
+async function runSample() {
+  try {
+    const result = await createFolderStructure(
+      'Example Client',
+      'Example Brand',
+      'Q1 2025 Campaign'
+    );
+    console.log('Folder structure created successfully', result);
+    return result;
+  } catch (error) {
+    console.error('Failed to create folder structure:', error);
     throw error;
   }
 }
@@ -70,4 +143,9 @@ if (module === require.main) {
   runSample().catch(console.error);
 }
 
-module.exports = runSample;
+module.exports = {
+  createFolderStructure,
+  findFolder,
+  createFolder,
+  findOrCreateFolder
+};1
